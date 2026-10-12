@@ -1,51 +1,53 @@
-import time
-import uuid
-from typing import Optional
+import jwt  # PyJWT
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+ISSUER = "https://idp.exam.local"
+AUDIENCE = "tds-gdtar2fk.apps.exam.local"
 
-ALLOWED_ORIGIN = "https://dash-4mvb2w.example.com"
-EMAIL = "23f2001563@ds.study.iitm.ac.in"
+PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
+cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
+EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
+WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
+ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
+SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
+dQIDAQAB
+-----END PUBLIC KEY-----
+"""
 
 app = FastAPI()
 
-# CORS added first so the header middleware below wraps it (outermost),
-# which means preflight and rejected responses also carry the custom headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],   # exact match, no wildcard
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Process-Time"],
-)
+
+class VerifyRequest(BaseModel):
+    token: str
 
 
-@app.middleware("http")
-async def add_headers(request: Request, call_next):
-    start = time.perf_counter()
-    request_id = str(uuid.uuid4())
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
-    return response
+def invalid():
+    return JSONResponse(status_code=401, content={"valid": False})
 
 
-@app.get("/stats")
-async def stats(values: Optional[str] = None):
-    if values is None or not values.strip():
-        raise HTTPException(status_code=422, detail="values is required")
+@app.post("/verify")
+async def verify(body: VerifyRequest):
     try:
-        nums = [int(v.strip()) for v in values.split(",") if v.strip() != ""]
-    except ValueError:
-        raise HTTPException(status_code=422, detail="values must be comma-separated integers")
-    if not nums:
-        raise HTTPException(status_code=422, detail="no values provided")
+        claims = jwt.decode(
+            body.token,
+            PUBLIC_KEY,
+            algorithms=["RS256"],      # pins the algorithm, blocks alg=none / HS256 tricks
+            audience=AUDIENCE,
+            issuer=ISSUER,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except Exception:
+        return invalid()
+
+    aud = claims.get("aud")
+    if isinstance(aud, list):
+        aud = AUDIENCE if AUDIENCE in aud else aud
     return {
-        "email": EMAIL,
-        "count": len(nums),
-        "sum": sum(nums),
-        "min": min(nums),
-        "max": max(nums),
-        "mean": sum(nums) / len(nums),
+        "valid": True,
+        "email": claims.get("email"),
+        "sub": claims.get("sub"),
+        "aud": aud,
     }
